@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>ASCO — a systems company</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo/asco-flat-logo-50.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/iosevka@5.0.5/400.css" rel="stylesheet">
+<!--
+  ASCO homepage — bare skeleton: fractal background + logo + light/dark toggle only.
+  Centerpiece is nnfractal (see ../nnfractal), ported as-is from its own web build:
+  a precomputed WebGL atlas player. The atlas PNGs were baked offline by the desktop
+  renderer (`nnfractal --bake`) into assets/atlas/*.png — grayscale sprite sheets of M
+  slices spanning the breathing learning-rate band. This page maps the live breath phase
+  -> lr -> a fractional slice index, blends the two nearest slices, then inverts +
+  vignettes per theme. Runtime cost is two texture taps, so it runs on anything.
+
+  Logo: assets/logo/asco-flat-logo-50.svg is used as the favicon. The nav mark below
+  inlines its own copy of the mark at small size and recolors it via currentColor so it
+  tracks the light/dark theme.
+-->
+<style>
+  :root{
+    --fg:#dddddd;            /* primary text — muted light gray, not pure white */
+    --fg-strong:#fff;        /* logo + wordmark only — full contrast */
+    --muted:rgba(200,200,200,.58);
+    --line:rgba(200,200,200,.18);
+    --chip-bg:rgba(255,255,255,.06);
+    --logo-scale:2;          /* single knob for the mark's size, never distorts */
+    --font-brand:'Space Grotesk',-apple-system,BlinkMacSystemFont,sans-serif;  /* ASCO wordmark only */
+    --font-body:'Iosevka',ui-monospace,Menlo,monospace;                       /* everything else */
+  }
+  body.light{
+    --fg:#2e2e2e;            /* muted dark gray, not pure black */
+    --fg-strong:#000;        /* logo + wordmark only — full contrast */
+    --muted:rgba(74,74,74,.60);
+    --line:rgba(74,74,74,.16);
+    --chip-bg:rgba(0,0,0,.05);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#000}
+  body.light{background:#fff}
+  body{font-family:var(--font-body);
+       color:var(--fg);transition:color .6s ease,background .6s ease}
+  #c{position:fixed;inset:0;display:block;width:100vw;height:100vh;cursor:pointer;
+     opacity:0;transition:opacity 1.1s ease}
+  #c.is-ready{opacity:1}
+
+  /* content overlay: transparent to clicks except interactive bits, so empty
+     space still pulses the fractal underneath */
+  .overlay{position:fixed;inset:0;display:flex;flex-direction:column;pointer-events:none;
+           padding:28px clamp(20px,5vw,72px)}
+  .overlay a,.overlay button{pointer-events:auto}
+  .poem-wrap{flex:1;display:flex;align-items:center;justify-content:flex-start;min-height:0}
+  .poem-col{display:flex;flex-direction:column;gap:14px;width:min(520px,86vw);min-height:0;
+            margin-left:clamp(0px,8vw,220px)}
+  .poem-title{margin:0;padding-left:8px;font-family:var(--font-body);font-weight:600;font-size:20px;
+              letter-spacing:.03em;color:var(--fg);transition:color .6s ease}
+  .poem-frame{position:relative;width:100%;max-height:min(64vh,560px);min-height:0}
+
+  nav{position:relative;display:flex;align-items:center;justify-content:space-between;gap:24px}
+  .brand{font-family:var(--font-brand);font-weight:600;letter-spacing:.02em;font-size:18px;
+         color:var(--fg-strong);transition:color .6s ease}
+  .mark{position:absolute;left:50%;top:50%;width:22px;height:19px;display:block;color:var(--fg-strong);
+        transform:translate(-50%,-50%) scale(var(--logo-scale));transition:color .6s ease}
+  .mark svg{display:block;width:100%;height:100%}
+
+  .toggle{background:none;border:none;padding:0;cursor:pointer;color:var(--muted);
+          font-family:inherit;font-size:13px;letter-spacing:.02em;
+          transition:color .25s ease}
+  .toggle:hover,.toggle:focus-visible{color:var(--fg)}
+  .toggle::after{content:'_';margin-left:2px;opacity:0}
+  .toggle:hover::after,.toggle:focus-visible::after{opacity:1;animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .mode-toggle{position:fixed;right:clamp(20px,5vw,72px);bottom:28px}
+
+  .poem{pointer-events:auto;width:100%;max-height:min(64vh,560px);
+        overflow-y:auto;overscroll-behavior:contain;
+        padding:8px 8px 8px 8px;
+        font-size:14.5px;line-height:1.85;letter-spacing:.01em;color:var(--fg);
+        transition:color .6s ease;
+        scrollbar-width:none}
+  .poem::-webkit-scrollbar{display:none}
+  .poem p{margin:0 0 1.7em}
+  .poem .attribution{margin-top:-1em;font-size:12px;color:var(--muted);
+                      letter-spacing:.06em;text-transform:uppercase;transition:color .6s ease}
+
+  .poem-more{text-align:center;padding-left:8px;pointer-events:none;
+             font-size:12px;letter-spacing:.08em;color:var(--muted);
+             opacity:0;transition:opacity .3s ease,color .6s ease}
+
+  #err{position:fixed;inset:0;display:none;place-items:center;color:#ddd;
+       font:14px/1.6 ui-monospace,monospace;padding:24px;text-align:center}
+</style>
+</head>
+<body class="light">
+<canvas id="c"></canvas>
+
+<div class="overlay">
+  <nav>
+    <div class="brand">ASCO</div>
+    <span class="mark">
+      <!-- inlined asco-flat-logo-50.svg (thick weight, holds up small); stroke -> currentColor -->
+      <svg viewBox="0 0 476 400" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="50" stroke-miterlimit="10">
+        <line x1="237.73" y1="217.45" x2="237.73" y2="88.86"/>
+        <line x1="237.73" y1="88.86" x2="306.56" y2="49.12"/>
+        <line x1="237.73" y1="88.86" x2="168.9" y2="49.12"/>
+        <line x1="349.09" y1="281.75" x2="237.73" y2="217.45"/>
+        <line x1="349.09" y1="281.75" x2="417.92" y2="242.01"/>
+        <line x1="349.09" y1="361.22" x2="349.09" y2="281.75"/>
+        <line x1="126.37" y1="281.75" x2="237.73" y2="217.45"/>
+        <line x1="126.37" y1="281.75" x2="57.54" y2="242.01"/>
+        <line x1="126.37" y1="361.22" x2="126.37" y2="281.75"/>
+        <line x1="168.9" y1="49.12" x2="126.36" y2="73.68"/>
+        <line x1="168.9" x2="168.9" y2="49.12"/>
+        <line x1="349.1" y1="73.68" x2="306.56" y2="49.12"/>
+        <line x1="306.56" x2="306.56" y2="49.12"/>
+        <line x1="460.47" y1="266.57" x2="417.93" y2="242.01"/>
+        <line x1="57.54" y1="242.01" x2="15" y2="266.57"/>
+        <line x1="57.54" y1="192.89" x2="57.54" y2="242.01"/>
+        <line x1="417.92" y1="192.89" x2="417.92" y2="242.01"/>
+        <line x1="168.91" y1="385.78" x2="126.37" y2="361.22"/>
+        <line x1="126.36" y1="361.22" x2="83.82" y2="385.78"/>
+        <line x1="349.1" y1="361.22" x2="306.56" y2="385.78"/>
+        <line x1="391.64" y1="385.78" x2="349.1" y2="361.22"/>
+      </svg>
+    </span>
+    <!-- placeholder: not wired up to anything yet -->
+    <button class="toggle" aria-label="Menu">[ menu ]</button>
+  </nav>
+
+  <button class="toggle mode-toggle" id="mode" aria-label="Toggle light / dark">[ <span id="modeLabel">dark</span> ]</button>
+
+  <div class="poem-wrap">
+   <div class="poem-col">
+    <h2 class="poem-title">Wonder</h2>
+    <div class="poem-frame">
+    <main class="poem">
+      <p>There are the rushing waves<br>
+      mountains of molecules<br>
+      each stupidly minding its own business<br>
+      trillions apart<br>
+      yet forming white surf in unison</p>
+
+      <p>Ages on ages<br>
+      before any eyes could see<br>
+      year after year<br>
+      thunderously pounding the shore as now.<br>
+      For whom, for what?<br>
+      On a dead planet<br>
+      with no life to entertain.</p>
+
+      <p>Never at rest<br>
+      tortured by energy<br>
+      wasted prodigiously by the Sun<br>
+      poured into space.<br>
+      A mite makes the sea roar.</p>
+
+      <p>Deep in the sea<br>
+      all molecules repeat<br>
+      the patterns of one another<br>
+      till complex new ones are formed.<br>
+      They make others like themselves<br>
+      and a new dance starts.<br>
+      Growing in size and complexity<br>
+      living things<br>
+      masses of atoms<br>
+      DNA, protein<br>
+      dancing a pattern ever more intricate.</p>
+
+      <p>Out of the cradle<br>
+      onto dry land<br>
+      here it is<br>
+      standing:<br>
+      atoms with consciousness;<br>
+      matter with curiosity.</p>
+
+      <p>Stands at the sea,<br>
+      wonders at wondering: I<br>
+      a universe of atoms<br>
+      an atom in the Universe.</p>
+
+      <p class="attribution">— Richard Feynman</p>
+    </main>
+    </div>
+    <div class="poem-more" id="poemMore" aria-hidden="true">⋯ scroll</div>
+   </div>
+  </div>
+</div>
+
+<div id="err"></div>
+<script>
+"use strict";
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {antialias:false}) || canvas.getContext('webgl');
+const errEl = document.getElementById('err');
+function fail(msg){ errEl.style.display='grid'; errEl.textContent=msg; throw new Error(msg); }
+if(!gl) fail('WebGL not available in this browser.');
+const GL2 = (typeof WebGL2RenderingContext!=='undefined') && (gl instanceof WebGL2RenderingContext);
+
+// ---- atlas variants (from `./nnfractal --bake` at three resolutions) ----
+// The player picks the SHARPEST atlas whose pixel dimensions fit the device's
+// MAX_TEXTURE_SIZE, so it runs on everything from desktops to old budget phones.
+const ATLASES = [
+  { url:'assets/atlas/atlas.png',    M:48, sliceW:2720, sliceH:1700, cols:6, rows:8, maxDim:16320, trained:887808000 },
+  { url:'assets/atlas/atlas-md.png', M:48, sliceW:1344, sliceH:840,  cols:6, rows:8, maxDim:8064,  trained:216760320 },
+  { url:'assets/atlas/atlas-lo.png', M:48, sliceW:680,  sliceH:424,  cols:6, rows:8, maxDim:4080,  trained:55357440  },
+];
+const MAXTEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+const ATLAS = Object.assign({ lrMin:1.68730, lrMax:1.90270 },
+  ATLASES.find(a=>a.maxDim<=MAXTEX) || ATLASES[ATLASES.length-1]);
+// ---- breathing (mirrors the desktop stepAnim; only lrNow is used to index the atlas) ----
+const S = { lrFixed:1.795, amp:0.06, animSpeed:0.036, animPhase:0.0, lrNow:1.795,
+            spikeActive:false, spikeT0:0.0, spikeAmp:0.40, spikeTau:0.20, paper:0 };
+
+// ---- shaders ----
+const VS = `${GL2?'#version 300 es\n':''}
+${GL2?'in':'attribute'} vec2 aPos;
+${GL2?'out':'varying'} vec2 uv;
+void main(){
+  uv = 0.5*aPos + 0.5;
+  gl_Position = vec4(aPos,0.0,1.0);
+}`;
+// Player: cover-fit the screen into a slice, sample the two nearest lr-slices from the
+// sprite sheet, blend, then apply the per-theme invert + vignette (matches desktop FS_COMP).
+const FS = `${GL2?'#version 300 es\n':''}
+precision highp float;
+${GL2?'in':'varying'} vec2 uv;
+${GL2?'out vec4 frag;':''}
+uniform sampler2D atlas;
+uniform vec2 grid;                 // (cols, rows)
+uniform vec2 inset;                // (0.5/sliceW, 0.5/sliceH) — keep bilinear inside the cell
+uniform vec2 coverScale, coverOffset;
+uniform float idx0, idx1, blend;
+uniform int paper;
+vec3 samp(float idx, vec2 s){
+  float col = mod(idx, grid.x);
+  float row = floor(idx/grid.x);
+  s = clamp(s, inset, 1.0-inset);
+  // y flipped: atlas rows are stored top-down, screen uv.y=1 is the top
+  vec2 cell = vec2((col + s.x)/grid.x, (row + (1.0 - s.y))/grid.y);
+  ${GL2?'return texture(atlas, cell).rgb;':'return texture2D(atlas, cell).rgb;'}
+}
+void main(){
+  vec2 s = uv*coverScale + coverOffset;
+  vec3 c = mix(samp(idx0,s), samp(idx1,s), blend);
+  float vig = smoothstep(1.15, 0.35, length(uv-0.5));
+  if(paper==1){ c = 1.0 - c; c = mix(vec3(1.0), c, mix(0.88,1.0,vig)); }
+  else        { c = c*mix(0.80,1.0,vig); }
+  ${GL2?'frag':'gl_FragColor'} = vec4(c,1.0);
+}`;
+
+function compile(type,src){
+  const s=gl.createShader(type); gl.shaderSource(s,src.trim()); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) fail('shader: '+gl.getShaderInfoLog(s));
+  return s;
+}
+const prog=gl.createProgram();
+gl.attachShader(prog,compile(gl.VERTEX_SHADER,VS));
+gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) fail('link: '+gl.getProgramInfoLog(prog));
+const U=n=>gl.getUniformLocation(prog,n);
+const vao = GL2 ? gl.createVertexArray() : null;
+if(GL2) gl.bindVertexArray(vao);
+// fullscreen triangle via an attribute buffer (works on both WebGL1 and WebGL2)
+const buf=gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 3,-1, -1,3]),gl.STATIC_DRAW);
+const aPos=gl.getAttribLocation(prog,'aPos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+// ---- load the baked atlas ----
+let tex=null, ready=false;
+const img=new Image();
+img.onload=()=>{
+  tex=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  ready=true;
+  // wait two rAFs so the first real frame is drawn+presented before we fade the
+  // canvas in, otherwise the fade can catch an unrendered/garbage frame on slow GPUs
+  requestAnimationFrame(()=>requestAnimationFrame(()=>canvas.classList.add('is-ready')));
+};
+img.onerror=()=>fail('could not load '+ATLAS.url);
+img.src=ATLAS.url;
+
+// ---- sizing: render at the window size (cheap — just two texture taps) ----
+let W=0,H=0, coverScale=[1,1], coverOffset=[0,0];
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1, 2);
+  W=Math.round(innerWidth*dpr); H=Math.round(innerHeight*dpr);
+  canvas.width=W; canvas.height=H;
+  // cover-fit the 16:10 slice into the window aspect (fill, crop overflow). Bias the
+  // horizontal crop toward the cell (~0.62 of slice width) so it survives portrait screens.
+  const As=ATLAS.sliceW/ATLAS.sliceH, Ac=W/H, FOCUS_X=0.62;
+  if(Ac>As){ coverScale=[1, As/Ac]; } else { coverScale=[Ac/As, 1]; }
+  coverOffset=[(1-coverScale[0])*FOCUS_X,(1-coverScale[1])/2];
+}
+window.addEventListener('resize',resize); resize();
+
+// ---- breathing + click pulse (same math as the desktop renderer) ----
+let lastT=0;
+function stepAnim(t){
+  let boost=0;
+  if(S.spikeActive){
+    const el=t-S.spikeT0;
+    boost=S.spikeAmp*Math.exp(-el/S.spikeTau);
+    if(el>8.0*S.spikeTau) S.spikeActive=false;
+  }
+  if(lastT===0) lastT=t;
+  let dt=t-lastT; lastT=t; if(dt>0.1) dt=0.1;
+  S.animPhase += (S.animSpeed+boost)*dt;
+  const frac=S.animPhase-Math.floor(S.animPhase);
+  S.lrNow = S.lrFixed*(1.0 + S.amp*Math.sin(frac*6.2831853));
+}
+canvas.addEventListener('pointerdown',()=>{ S.spikeActive=true; S.spikeT0=performance.now()*0.001; });
+
+// ---- light / dark: invert flag for the player + text colors via body class ----
+function setMode(mode){
+  const light=(mode==='light');
+  document.body.classList.toggle('light',light);
+  document.body.classList.toggle('dark',!light);
+  S.paper = light?1:0;
+  document.getElementById('modeLabel').textContent = light?'light':'dark';
+}
+document.getElementById('mode').addEventListener('click',()=>{
+  setMode(document.body.classList.contains('light')?'dark':'light');
+});
+setMode('light');
+
+// ---- poem "more" cue: shown only while there's unseen content below ----
+const poemEl = document.querySelector('.poem');
+const poemMoreEl = document.getElementById('poemMore');
+function updatePoemMore(){
+  const atBottom = poemEl.scrollTop + poemEl.clientHeight >= poemEl.scrollHeight - 2;
+  poemMoreEl.style.opacity = atBottom ? '0' : '1';
+}
+poemEl.addEventListener('scroll', updatePoemMore);
+window.addEventListener('resize', updatePoemMore);
+updatePoemMore();
+
+// ---- draw loop ----
+function frame(now){
+  requestAnimationFrame(frame);
+  if(!ready) return;
+  stepAnim(now*0.001);
+  const f = Math.max(0,Math.min(1,(S.lrNow-ATLAS.lrMin)/(ATLAS.lrMax-ATLAS.lrMin)))*(ATLAS.M-1);
+  const i0=Math.floor(f), i1=Math.min(i0+1,ATLAS.M-1), t=f-i0;
+
+  gl.viewport(0,0,W,H);
+  gl.useProgram(prog);
+  if(GL2) gl.bindVertexArray(vao);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.uniform1i(U('atlas'),0);
+  gl.uniform2f(U('grid'),ATLAS.cols,ATLAS.rows);
+  gl.uniform2f(U('inset'),0.5/ATLAS.sliceW,0.5/ATLAS.sliceH);
+  gl.uniform2f(U('coverScale'),coverScale[0],coverScale[1]);
+  gl.uniform2f(U('coverOffset'),coverOffset[0],coverOffset[1]);
+  gl.uniform1f(U('idx0'),i0); gl.uniform1f(U('idx1'),i1); gl.uniform1f(U('blend'),t);
+  gl.uniform1i(U('paper'),S.paper);
+  gl.drawArrays(gl.TRIANGLES,0,3);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
