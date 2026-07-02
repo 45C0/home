@@ -157,7 +157,17 @@
        font:14px/1.6 ui-monospace,monospace;padding:24px;text-align:center}
 </style>
 </head>
-<body class="light">
+<body>
+<script>
+  // Default theme: follow the OS via prefers-color-scheme, otherwise DARK. Runs as the
+  // first thing in <body> so the class is set before first paint — no flash of the wrong
+  // theme. Note: the CSS spec dropped the "no-preference" value, so browsers report "no
+  // explicit preference" AS light; real OSes always specify one, so in practice this just
+  // matches the visitor's system theme. The try/catch is the actual dark fallback: a
+  // browser too old for matchMedia gets dark. The bottom script then syncs the WebGL
+  // invert flag + toggle label to whatever we land on here.
+  try { if (matchMedia('(prefers-color-scheme: light)').matches) document.body.classList.add('light'); } catch (e) {}
+</script>
 <canvas id="c"></canvas>
 <!-- source for the WebGL texture below: kept in the DOM (not display:none) so browsers
      don't throttle its decode; visually invisible via opacity+offscreen positioning. -->
@@ -414,7 +424,8 @@ function setMode(mode){
 document.getElementById('mode').addEventListener('click',()=>{
   setMode(document.body.classList.contains('light')?'dark':'light');
 });
-setMode('light');
+// sync the invert flag + label to the theme the inline head-of-body script already chose
+setMode(document.body.classList.contains('light')?'light':'dark');
 
 // ---- poem "more" cue: shown only while there's unseen content below ----
 const poemEl = document.querySelector('.poem');
