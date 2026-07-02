@@ -11,12 +11,16 @@
 <link href="https://cdn.jsdelivr.net/npm/@fontsource/iosevka@5.0.5/400.css" rel="stylesheet">
 <!--
   ASCO homepage — bare skeleton: fractal background + logo + light/dark toggle only.
-  Centerpiece is nnfractal (see ../nnfractal), ported as-is from its own web build:
-  a precomputed WebGL atlas player. The atlas PNGs were baked offline by the desktop
-  renderer (`nnfractal --bake`) into assets/atlas/*.png — grayscale sprite sheets of M
-  slices spanning the breathing learning-rate band. This page maps the live breath phase
-  -> lr -> a fractional slice index, blends the two nearest slices, then inverts +
-  vignettes per theme. Runtime cost is two texture taps, so it runs on anything.
+  Centerpiece is nnfractal (see ../nnfractal): the breathing loop is baked offline by the
+  desktop renderer (`nnfractal --bake-video`) into an ordered sequence of frames (one per
+  phase step around the cycle, not indexed by lr), then encoded with ffmpeg into
+  assets/video/breathe*.mp4. A hidden <video> loops it; each rAF we upload its current
+  frame into a WebGL texture, cover-fit it, and invert+vignette per theme. Since the
+  sinusoidal breathe motion is baked into the frame ORDER, plain forward playback
+  reproduces it exactly — no client-side re-sampling, and (unlike a PNG atlas) only one
+  decoded frame is ever resident in memory regardless of clip length. A click's speed-up
+  pulse is just a temporary video.playbackRate multiplier, same exponential decay as the
+  desktop tool.
 
   Logo: assets/logo/asco-flat-logo-50.svg is used as the favicon. The nav mark below
   inlines its own copy of the mark at small size and recolors it via currentColor so it
@@ -135,6 +139,10 @@
 </head>
 <body class="light">
 <canvas id="c"></canvas>
+<!-- source for the WebGL texture below: kept in the DOM (not display:none) so browsers
+     don't throttle its decode; visually invisible via opacity+offscreen positioning. -->
+<video id="bgvideo" muted loop playsinline autoplay preload="auto"
+       style="position:fixed;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none"></video>
 
 <div class="overlay">
   <nav>
@@ -250,20 +258,19 @@ function fail(msg){ errEl.style.display='grid'; errEl.textContent=msg; throw new
 if(!gl) fail('WebGL not available in this browser.');
 const GL2 = (typeof WebGL2RenderingContext!=='undefined') && (gl instanceof WebGL2RenderingContext);
 
-// ---- atlas variants (from `./nnfractal --bake` at three resolutions) ----
-// The player picks the SHARPEST atlas whose pixel dimensions fit the device's
-// MAX_TEXTURE_SIZE, so it runs on everything from desktops to old budget phones.
-const ATLASES = [
-  { url:'assets/atlas/atlas.png',    M:48, sliceW:2720, sliceH:1700, cols:6, rows:8, maxDim:16320, trained:887808000 },
-  { url:'assets/atlas/atlas-md.png', M:48, sliceW:1344, sliceH:840,  cols:6, rows:8, maxDim:8064,  trained:216760320 },
-  { url:'assets/atlas/atlas-lo.png', M:48, sliceW:680,  sliceH:424,  cols:6, rows:8, maxDim:4080,  trained:55357440  },
-];
-const MAXTEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-const ATLAS = Object.assign({ lrMin:1.68730, lrMax:1.90270 },
-  ATLASES.find(a=>a.maxDim<=MAXTEX) || ATLASES[ATLASES.length-1]);
-// ---- breathing (mirrors the desktop stepAnim; only lrNow is used to index the atlas) ----
-const S = { lrFixed:1.795, amp:0.06, animSpeed:0.036, animPhase:0.0, lrNow:1.795,
-            spikeActive:false, spikeT0:0.0, spikeAmp:0.40, spikeTau:0.20, paper:0 };
+// ---- video (from `./nnfractal --bake-video` + ffmpeg) ----
+// The breathing loop is baked as an ORDERED SEQUENCE OF FRAMES (one per phase step around
+// the cycle), not an lr-indexed atlas — so a plain forward-looping <video> reproduces the
+// sinusoidal breathe motion with no client-side re-sampling. A <video> only ever has ONE
+// decoded frame resident at a time (browsers stream-decode), regardless of clip length, so
+// there's no multi-hundred-MB bitmap sitting in memory — the whole file is ~5MB, trivial to
+// download and hardware-decode on anything, so there's no need to tier by device anymore.
+const VIDEO = { url:'assets/video/breathe.mp4', w:2560, h:1080 };
+// One breathe cycle = 667 frames @ 24fps ≈ 27.79s, authored to match the desktop tool's
+// animSpeed=0.036 cycles/sec — native playbackRate=1 already reproduces the nominal speed.
+const ANIM_SPEED = 24/667;
+// ---- breathing (drives video.playbackRate; the sinusoid itself is baked into the frames) ----
+const S = { spikeActive:false, spikeT0:0.0, spikeAmp:0.40, spikeTau:0.20, paper:0 };
 
 // ---- shaders ----
 const VS = `${GL2?'#version 300 es\n':''}
@@ -273,29 +280,21 @@ void main(){
   uv = 0.5*aPos + 0.5;
   gl_Position = vec4(aPos,0.0,1.0);
 }`;
-// Player: cover-fit the screen into a slice, sample the two nearest lr-slices from the
-// sprite sheet, blend, then apply the per-theme invert + vignette (matches desktop FS_COMP).
+// Player: cover-fit the screen into the video frame, sample it, apply the per-theme
+// invert + vignette (matches desktop FS_COMP).
 const FS = `${GL2?'#version 300 es\n':''}
 precision highp float;
 ${GL2?'in':'varying'} vec2 uv;
 ${GL2?'out vec4 frag;':''}
-uniform sampler2D atlas;
-uniform vec2 grid;                 // (cols, rows)
-uniform vec2 inset;                // (0.5/sliceW, 0.5/sliceH) — keep bilinear inside the cell
+uniform sampler2D vid;
 uniform vec2 coverScale, coverOffset;
-uniform float idx0, idx1, blend;
 uniform int paper;
-vec3 samp(float idx, vec2 s){
-  float col = mod(idx, grid.x);
-  float row = floor(idx/grid.x);
-  s = clamp(s, inset, 1.0-inset);
-  // y flipped: atlas rows are stored top-down, screen uv.y=1 is the top
-  vec2 cell = vec2((col + s.x)/grid.x, (row + (1.0 - s.y))/grid.y);
-  ${GL2?'return texture(atlas, cell).rgb;':'return texture2D(atlas, cell).rgb;'}
-}
 void main(){
   vec2 s = uv*coverScale + coverOffset;
-  vec3 c = mix(samp(idx0,s), samp(idx1,s), blend);
+  s = clamp(s, 0.0, 1.0);
+  // y flipped: frames are stored top-down, screen uv.y=1 is the top
+  vec2 cell = vec2(s.x, 1.0 - s.y);
+  vec3 c = ${GL2?'texture(vid, cell).rgb':'texture2D(vid, cell).rgb'};
   float vig = smoothstep(1.15, 0.35, length(uv-0.5));
   if(paper==1){ c = 1.0 - c; c = mix(vec3(1.0), c, mix(0.88,1.0,vig)); }
   else        { c = c*mix(0.80,1.0,vig); }
@@ -323,14 +322,14 @@ const aPos=gl.getAttribLocation(prog,'aPos');
 gl.enableVertexAttribArray(aPos);
 gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
 
-// ---- load the baked atlas ----
+// ---- load the baked video ----
 let tex=null, ready=false;
-const img=new Image();
-img.onload=()=>{
+const video = document.getElementById('bgvideo');
+function onCanPlay(){
+  video.play().catch(()=>{});   // muted+playsinline should let this autoplay everywhere
   tex=gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D,tex);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
-  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
@@ -339,26 +338,29 @@ img.onload=()=>{
   // wait two rAFs so the first real frame is drawn+presented before we fade the
   // canvas in, otherwise the fade can catch an unrendered/garbage frame on slow GPUs
   requestAnimationFrame(()=>requestAnimationFrame(()=>canvas.classList.add('is-ready')));
-};
-img.onerror=()=>fail('could not load '+ATLAS.url);
-img.src=ATLAS.url;
+}
+video.addEventListener('canplay',onCanPlay,{once:true});
+video.addEventListener('error',()=>fail('could not load '+video.src));
+video.src=VIDEO.url;
 
-// ---- sizing: render at the window size (cheap — just two texture taps) ----
+// ---- sizing: render at the window size (cheap — just one texture upload+tap) ----
 let W=0,H=0, coverScale=[1,1], coverOffset=[0,0];
 function resize(){
   const dpr=Math.min(window.devicePixelRatio||1, 2);
   W=Math.round(innerWidth*dpr); H=Math.round(innerHeight*dpr);
   canvas.width=W; canvas.height=H;
-  // cover-fit the 16:10 slice into the window aspect (fill, crop overflow). Bias the
-  // horizontal crop toward the cell (~0.62 of slice width) so it survives portrait screens.
-  const As=ATLAS.sliceW/ATLAS.sliceH, Ac=W/H, FOCUS_X=0.62;
+  // cover-fit the 16:10 frame into the window aspect (fill, crop overflow). Bias the
+  // horizontal crop toward the cell (~0.62 of frame width) so it survives portrait screens.
+  const As=VIDEO.w/VIDEO.h, Ac=W/H, FOCUS_X=0.62;
   if(Ac>As){ coverScale=[1, As/Ac]; } else { coverScale=[Ac/As, 1]; }
   coverOffset=[(1-coverScale[0])*FOCUS_X,(1-coverScale[1])/2];
 }
 window.addEventListener('resize',resize); resize();
 
-// ---- breathing + click pulse (same math as the desktop renderer) ----
-let lastT=0;
+// ---- breathing + click pulse: the sinusoid is baked into the frame order, so all the
+// player needs to do is speed up playback during a click, then ease back to 1x. Same
+// exponential decay curve as the desktop renderer, just driving playbackRate instead of
+// an atlas index. ----
 function stepAnim(t){
   let boost=0;
   if(S.spikeActive){
@@ -366,11 +368,8 @@ function stepAnim(t){
     boost=S.spikeAmp*Math.exp(-el/S.spikeTau);
     if(el>8.0*S.spikeTau) S.spikeActive=false;
   }
-  if(lastT===0) lastT=t;
-  let dt=t-lastT; lastT=t; if(dt>0.1) dt=0.1;
-  S.animPhase += (S.animSpeed+boost)*dt;
-  const frac=S.animPhase-Math.floor(S.animPhase);
-  S.lrNow = S.lrFixed*(1.0 + S.amp*Math.sin(frac*6.2831853));
+  const rate=Math.min(16, 1 + boost/ANIM_SPEED);
+  if(Math.abs(video.playbackRate-rate)>0.01) video.playbackRate=rate;
 }
 canvas.addEventListener('pointerdown',()=>{ S.spikeActive=true; S.spikeT0=performance.now()*0.001; });
 
@@ -420,19 +419,16 @@ function frame(now){
   requestAnimationFrame(frame);
   if(!ready) return;
   stepAnim(now*0.001);
-  const f = Math.max(0,Math.min(1,(S.lrNow-ATLAS.lrMin)/(ATLAS.lrMax-ATLAS.lrMin)))*(ATLAS.M-1);
-  const i0=Math.floor(f), i1=Math.min(i0+1,ATLAS.M-1), t=f-i0;
 
   gl.viewport(0,0,W,H);
   gl.useProgram(prog);
   if(GL2) gl.bindVertexArray(vao);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex);
-  gl.uniform1i(U('atlas'),0);
-  gl.uniform2f(U('grid'),ATLAS.cols,ATLAS.rows);
-  gl.uniform2f(U('inset'),0.5/ATLAS.sliceW,0.5/ATLAS.sliceH);
+  if(video.readyState>=video.HAVE_CURRENT_DATA)
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,video);
+  gl.uniform1i(U('vid'),0);
   gl.uniform2f(U('coverScale'),coverScale[0],coverScale[1]);
   gl.uniform2f(U('coverOffset'),coverOffset[0],coverOffset[1]);
-  gl.uniform1f(U('idx0'),i0); gl.uniform1f(U('idx1'),i1); gl.uniform1f(U('blend'),t);
   gl.uniform1i(U('paper'),S.paper);
   gl.drawArrays(gl.TRIANGLES,0,3);
 }
