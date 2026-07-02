@@ -1,3 +1,3 @@
-### Homepage for ASCO - A systems Company.
+### Homepage for ASCO.
 
-\<Some short and sweets words on what ASCO does\>
+A systems company.

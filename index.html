@@ -58,19 +58,32 @@
   .overlay{position:fixed;inset:0;display:flex;flex-direction:column;pointer-events:none;
            padding:28px clamp(20px,5vw,72px)}
   .overlay a,.overlay button{pointer-events:auto}
-  /* --- landing line + panel heading share one anchor (--head-y) so opening the panel
-         reads as "A systems company." swapping to "A Neural Fractal" IN PLACE --- */
-  :root{--head-y:30vh}
+  /* --- landing line + panel heading share one anchor (--head-y). --head-y is placed so
+         the whole poem block (heading + body, ~--block-h tall) sits VERTICALLY CENTERED:
+         head-top = 28px pad + head-y = 50vh - block/2, so the block is symmetric about the
+         screen's horizontal midline. max(9vh, …) keeps the heading off the nav on short
+         screens, where the poem is taller than the viewport and simply scrolls instead.
+         --lede-drop is derived from --head-y so the tagline always rests at true center
+         (50vh) and rises exactly onto the heading, whatever --head-y resolves to. --- */
+  :root{--block-h:614px;
+        --head-y:max(9vh, calc(50vh - (var(--block-h) / 2) - 28px));
+        --lede-drop:calc(50vh - 28px - var(--head-y) - 0.7em)}
 
-  /* landing lede + the "what is this?" opener — the only copy on the front door. The
-     tagline is anchored at --head-y; the opener hangs below it (absolute) so it never
-     nudges the tagline off the shared anchor. */
+  /* landing lede + the "what is this?" opener — the only copy on the front door.
+     At rest the tagline sits vertically CENTERED (dropped --lede-drop below the shared
+     --head-y anchor). Opening the panel first ELEVATES it up to that anchor, and only
+     once it arrives does .lede cross-fade into the "A Neural Fractal" heading. The
+     transform is on .tagline (not .lede-inner) so it doesn't become the containing block
+     for the position:fixed .whatis button and drag it along. */
   .lede{position:fixed;inset:0;padding:28px clamp(20px,5vw,72px);pointer-events:none;
-        opacity:1;transition:opacity .28s ease .2s}                 /* reappears after the panel clears */
-  body.panel-open .lede{opacity:0;pointer-events:none;transition:opacity .2s ease}  /* leaves first, fast */
+        opacity:1;transition:opacity .25s ease .22s}                        /* closing: fade back in once panel clears */
+  body.panel-open .lede{opacity:0;pointer-events:none;transition:opacity .25s ease .38s}  /* opening: fade out AFTER the elevate */
   .lede-inner{margin-top:var(--head-y);margin-left:clamp(0px,8vw,220px)}
   .tagline{margin:0;padding-left:8px;font-family:var(--font-body);font-weight:600;font-size:20px;
-           letter-spacing:.03em;color:var(--fg);transition:color .6s ease}
+           letter-spacing:.03em;color:var(--fg);transform:translateY(var(--lede-drop));
+           transition:color .6s ease, transform .4s ease .2s}               /* closing: settle back down to center */
+  body.panel-open .tagline{transform:translateY(0);
+           transition:color .6s ease, transform .42s cubic-bezier(.2,.75,.25,1)}  /* opening: elevate up to the anchor */
   .whatis{position:fixed;left:clamp(20px,5vw,72px);bottom:28px}
 
   /* fractal explanation panel — same heading anchor as the landing line. Fades in AFTER
@@ -78,7 +91,7 @@
      click-through so the fractal still pulses around the text. */
   .panel{position:fixed;inset:0;padding:28px clamp(20px,5vw,72px);pointer-events:none;
          opacity:0;visibility:hidden;transition:opacity .2s ease, visibility 0s linear .2s}
-  .panel.is-open{opacity:1;visibility:visible;transition:opacity .28s ease .2s, visibility 0s}
+  .panel.is-open{opacity:1;visibility:visible;transition:opacity .3s ease .55s, visibility 0s}
   .panel-col{position:relative;width:min(520px,86vw);margin-top:var(--head-y);
              margin-left:clamp(0px,8vw,220px);pointer-events:none}
   .panel-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;
@@ -91,7 +104,7 @@
               opacity:0;transform:translateY(6px);
               transition:opacity .2s ease, transform .2s ease}
   .panel.is-open .panel-body{opacity:1;transform:none;
-              transition:opacity .35s ease .34s, transform .35s ease .34s}
+              transition:opacity .35s ease .8s, transform .35s ease .8s}
   .poem-frame{position:relative;width:100%;max-height:min(64vh,560px);min-height:0}
 
   nav{position:relative;display:flex;align-items:center;justify-content:space-between;gap:24px}
@@ -128,6 +141,13 @@
   .poem .math .msep{height:.7em}
   .poem .math .an{color:var(--muted);font-size:11.5px;letter-spacing:.03em;white-space:nowrap}
   .poem .math sub{font-size:.72em}
+
+  /* axis -> meaning key; same left-rule as .math, laid out as two aligned columns */
+  .poem .maplist{margin:0 0 1.7em;padding:4px 0 4px 16px;border-left:1px solid var(--line);
+                 display:grid;grid-template-columns:auto 1fr;gap:.55em 1.6em;
+                 font-size:13.5px;line-height:1.5;letter-spacing:0}
+  .poem .maplist dt{color:var(--fg)}
+  .poem .maplist dd{margin:0;color:var(--muted)}
 
   .poem-more{text-align:center;padding-left:8px;pointer-events:none;
              font-size:12px;letter-spacing:.08em;color:var(--muted);
@@ -215,25 +235,35 @@
       </div>
       
       <p>Simply put, it fits 4 points on the curve <i>sin(2u)</i></p>
-      <p>The interesting bits occur when we start experimenting with the initialization of the weights.
-      Let's pick <i>sine</i> and <i>cosine</i> to initialize from and let's scale our picks by scalars <i>x</i> and <i>y</i>.
-      </p>
+
+      <p>The initial values of the weights are picked from <i>sine</i> and <i>cosine</i>, multiplied by two scalars — <i>x</i> and <i>y</i>:</p>
 
       <div class="math" aria-label="the per-pixel computation">
         <div class="mrow"><span>w<sub>i</sub> = x · sin(1.7 i + 1)</span></div>
         <div class="mrow"><span>v<sub>i</sub> = y · cos(2.3 i + 0.5)</span><span class="an">i = 0…3</span></div>
       </div>
 
-      <p>Finally, we train our network with 600 iterations</p>
+      <p>The actual training of our network thus becomes this iterative map, where η is the step length</p>
 
       <div class="math" aria-label="the per-pixel computation">
         <div class="mrow"><span>θ ← θ − η · ∇L</span><span class="an">× 600</span></div>
       </div>
 
-      <p>Now we record one fact — does the loss settle, or blow up? 
-      We store that fact as a pixel value at the location determined by our scalars x and y.</p>
+      <p>There is no guarantee that θ will converge.
+        It's entirely dependent on η and, more importantly, the initial weights.
+        In fact, there is no way to predict the outcome short of running it.
+        It is chaotic, sensitive to initial values — just like the weather.
+      </p>
 
-      <p>The resulting image is the neural fractal. 
+      <p>Now if we plot this dependence —</p>
+
+      <dl class="maplist" aria-label="what each axis maps to">
+        <dt>x, y plane</dt><dd>the init scalars</dd>
+        <dt>time axis</dt><dd>the step length</dd>
+        <dt>pixel colour</dt><dd>convergence</dd>
+      </dl>
+
+      <p>— the resulting image is this neural fractal.
         An emergent pattern reminiscent of a biological cell, generated entirely by its artificial cousin.</p>
       
       <p>Kinda poetic.</p>
